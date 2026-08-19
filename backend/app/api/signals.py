@@ -40,6 +40,10 @@ class SignalModel(BaseModel):
     enabled: bool = True
 
 
+class AIGenerateRequest(BaseModel):
+    description: str
+
+
 # ── 字段选项 / 运算符 ───────────────────────────────────
 
 
@@ -108,6 +112,39 @@ def save_signal(req: SignalModel, request: Request):
     custom_signals.save_one(_data_dir(request), sig)
     _invalidate()
     return {"ok": True, "signal": sig}
+
+
+# ── AI 生成 ─────────────────────────────────────────────
+
+
+@router.post("/ai/generate")
+async def ai_generate_signal(req: AIGenerateRequest):
+    """AI 根据自然语言描述生成自定义信号条件。
+
+    不落盘：只返回 {name, conditions} 供前端回填表单，由用户确认后走
+    常规 save 流程。校验复用 custom_signals.validate()（白名单安全闸门）。
+    """
+    from app.services.ai_provider import generate_ai_text
+    from app.strategy import custom_signals_ai
+
+    description = req.description.strip()
+    if not description:
+        raise HTTPException(status_code=400, detail="请先描述信号思路")
+    if len(description) > 500:
+        raise HTTPException(status_code=400, detail="描述过长（最多 500 字）")
+
+    messages = custom_signals_ai.build_messages(description)
+    try:
+        text = await generate_ai_text(messages, temperature=0.2, max_tokens=1000)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"AI 生成失败: {e}") from e
+
+    try:
+        return custom_signals_ai.parse_and_validate(text)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ── 删除 ───────────────────────────────────────────────

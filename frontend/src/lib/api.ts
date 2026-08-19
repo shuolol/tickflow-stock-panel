@@ -586,6 +586,11 @@ export interface CustomSignalOptions {
   kinds: { key: string; label: string }[]
 }
 
+export interface CustomSignalAIGenerateResult {
+  name: string
+  conditions: CustomSignalCondition[]
+}
+
 // ===== Monitor (监控规则 + 触发记录) =====
 export interface MonitorCondition {
   field: string
@@ -2190,6 +2195,12 @@ export const api = {
 
   customSignalDelete: (id: string) =>
     request<{ ok: boolean }>(`/api/custom-signals/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  customSignalsAiGenerate: (description: string) =>
+    request<CustomSignalAIGenerateResult>('/api/custom-signals/ai/generate', {
+      method: 'POST',
+      body: JSON.stringify({ description }),
+    }),
 
   // ===== Monitor Rules (监控规则) =====
   monitorRulesList: () =>

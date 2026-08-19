@@ -676,7 +676,20 @@ class StrategyEngine:
                     self.required_history_bars(child_ids, params_map=params_map),
                 )
             elif strategy.filter_history_fn:
-                required = max(required, int(strategy.lookback_days))
+                # lookback_days 优先取自解析后的参数(默认值/保存覆盖/本次调用),
+                # 静态 LOOKBACK_DAYS 兜底。策略可能只把窗口声明为参数
+                # (如 AI 生成策略), 此时 strategy.lookback_days 回退到 1,
+                # 不解析参数会低估历史需求 → build_strategy_context 跳过加载 → 运行时报错。
+                params = self.resolve_params(
+                    strategy,
+                    params_map.get(strategy_id),
+                    overrides_map.get(strategy_id),
+                )
+                lookback = int(strategy.lookback_days)
+                param_lookback = params.get("lookback_days")
+                if isinstance(param_lookback, (int, float)) and param_lookback > 0:
+                    lookback = max(lookback, int(param_lookback))
+                required = max(required, lookback)
         return required
 
     def prepare_realtime_matrix(
