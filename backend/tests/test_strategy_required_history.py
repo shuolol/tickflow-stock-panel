@@ -5,10 +5,12 @@ strategy.lookback_days 回退到 1, required_history_bars 返回 1,
 build_strategy_context 因此跳过加载历史 (history_bars > 1 不成立),
 engine.run 对 filter_history 策略报 "requires history data"。
 """
+import dataclasses
 from datetime import date
 from types import SimpleNamespace
 
 import polars as pl
+import pytest
 
 from app.services.screener import ScreenerService
 from app.strategy.engine import StrategyDef, StrategyEngine
@@ -112,3 +114,58 @@ def test_build_strategy_context_loads_history_for_param_lookback(tmp_path, monke
     )
     assert captured["lookback_days"] == 22
     assert context.history is not None
+
+
+def test_run_rejects_missing_custom_signal_column():
+    """filter_history 策略 REQUIRED_FEATURES 引用未注入的 csg_ 列时,
+    引擎给出明确中文报错, 而不是把 polars 缺列错抛成 500。"""
+    from app.strategy.engine import StrategyDataContext
+
+    sid = "custom_csg_missing"
+    strategy = _filter_history_strategy(sid)
+    strategy = dataclasses.replace(
+        strategy,
+        required_features=frozenset({"csg_oversold_macd_about_to_golden"}),
+    )
+    engine = _make_engine(strategy)
+
+    target = date(2026, 7, 15)
+    context = StrategyDataContext(
+        asset_type="stock",
+        timeframe="1d",
+        as_of=target,
+        current=None,
+        history=pl.DataFrame({"symbol": ["A", "B"], "date": [target, target]}),
+    )
+
+    with pytest.raises(ValueError, match="csg_oversold_macd_about_to_golden"):
+        engine.run(sid, context)
+
+
+def test_run_ok_when_custom_signal_column_present():
+    """csg_ 列已注入时正常运行 (回归: 不误伤)。"""
+    from app.strategy.engine import StrategyDataContext
+
+    sid = "custom_csg_ok"
+    strategy = _filter_history_strategy(sid)
+    strategy = dataclasses.replace(
+        strategy,
+        required_features=frozenset({"csg_oversold_macd_about_to_golden"}),
+    )
+    engine = _make_engine(strategy)
+
+    target = date(2026, 7, 15)
+    context = StrategyDataContext(
+        asset_type="stock",
+        timeframe="1d",
+        as_of=target,
+        current=None,
+        history=pl.DataFrame({
+            "symbol": ["A", "B"],
+            "date": [target, target],
+            "csg_oversold_macd_about_to_golden": [True, False],
+        }),
+    )
+
+    result = engine.run(sid, context)
+    assert result.strategy_id == sid

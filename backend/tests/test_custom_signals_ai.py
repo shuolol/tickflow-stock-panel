@@ -117,12 +117,77 @@ def test_parse_and_validate_rejects_empty_conditions():
         parse_and_validate(raw)
 
 
+def test_parse_and_validate_accepts_bare_whitelist_field_rhs():
+    # AI 漏写 field: 前缀: 右值裸写白名单字段, 应自动补全为 field: 形式
+    raw = json.dumps({
+        "name": "MACD金叉",
+        "conditions": [
+            {"left": "macd_dif", "op": ">", "right": "macd_dea"}
+        ],
+    })
+    result = parse_and_validate(raw)
+    assert result["conditions"][0]["right"] == "field:macd_dea"
+
+
+def test_parse_and_validate_rejects_bare_non_whitelist_field_rhs():
+    # 裸写非白名单字段作为右值, 仍应报非法右值
+    raw = json.dumps({
+        "name": "非法右值",
+        "conditions": [
+            {"left": "close", "op": ">", "right": "not_a_field"}
+        ],
+    })
+    with pytest.raises(ValueError, match="非法右值"):
+        parse_and_validate(raw)
+
+
+def test_validate_accepts_bare_field_rhs():
+    # 解析器层面: 裸字段右值在白名单内即视为字段引用, 不抛异常
+    from app.strategy import custom_signals
+
+    sig = {
+        "id": "test_bare_rhs",
+        "name": "测试",
+        "kind": "entry",
+        "conditions": [
+            {"left": "macd_dif", "op": ">", "right": "macd_dea",
+             "leftDays": 0, "rightDays": 0},
+        ],
+    }
+    custom_signals.validate(sig)
+
+
+def test_parse_and_validate_accepts_json_with_trailing_comma():
+    # AI 在数组结尾多加逗号 (,]): 应被容错
+    raw = '{"name": "测试", "conditions": [{"left": "close", "op": ">", "right": "1", "leftDays": 0, "rightDays": 0},]}'
+    result = parse_and_validate(raw)
+    assert result["name"] == "测试"
+    assert len(result["conditions"]) == 1
+
+
+def test_parse_and_validate_accepts_json_with_prose_wrap():
+    # AI 混入前后解释文字: 应提取首个 {...} 平衡块
+    raw = f"好的, 我设计了如下信号:\n{VALID_JSON}\n希望对你有所帮助。"
+    result = parse_and_validate(raw)
+    assert result["name"] == "回踩MA20放量"
+
+
+def test_parse_and_validate_accepts_json_with_trailing_garbage():
+    # 无围栏 + 尾随垃圾字符: 截到最后一个 } 后仍应解析成功
+    raw = '{"name": "测试", "conditions": [{"left": "close", "op": ">", "right": "1", "leftDays": 0, "rightDays": 0}]} 这是额外说明'
+    result = parse_and_validate(raw)
+    assert result["name"] == "测试"
+
+
 # ── API 端点 ────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_ai_generate_endpoint_success(monkeypatch):
+    captured: dict = {}
+
     async def fake_generate(messages, **kwargs):
+        captured["max_tokens"] = kwargs.get("max_tokens")
         return VALID_JSON
 
     import app.services.ai_provider as ai_provider
@@ -131,6 +196,8 @@ async def test_ai_generate_endpoint_success(monkeypatch):
     result = await ai_generate_signal(AIGenerateRequest(description="回踩MA20且放量"))
     assert result["name"] == "回踩MA20放量"
     assert len(result["conditions"]) == 2
+    # 复杂描述 (多条件) 需要足够 token, 避免 JSON 被截断
+    assert captured["max_tokens"] >= 2000
 
 
 @pytest.mark.asyncio

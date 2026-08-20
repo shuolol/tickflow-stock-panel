@@ -58,7 +58,7 @@ _SYSTEM_TEMPLATE = """你是A股量化信号设计专家。用户会描述一个
 
 右值（right）：
 - 数字：写字符串形式，如 "2"、"3000"、"0.05"
-- 另一字段：写 "field:字段名"，如 "field:ma20"
+- 另一字段：必须带 "field:" 前缀，如 "field:ma20"；严禁裸写字段名，如 "macd_dea" 应写成 "field:macd_dea"
 
 日期偏移（leftDays / rightDays）：取 N 个交易日前的值，0 = 当日最新；范围 0~{max_days}。只有明确需要「前N日」时才使用偏移。
 
@@ -68,6 +68,10 @@ _SYSTEM_TEMPLATE = """你是A股量化信号设计专家。用户会描述一个
 {{"name": "简短中文信号名称(≤12字)", "conditions": [
   {{"left": "字段", "op": "运算符", "right": "数字字符串或field:字段", "leftDays": 0, "rightDays": 0}}
 ]}}
+   示例（右值引用另一字段时必须带 field: 前缀，不能裸写字段名）：
+   {{"name": "MACD金叉", "conditions": [
+     {{"left": "macd_dif", "op": ">", "right": "field:macd_dea", "leftDays": 0, "rightDays": 0}}
+   ]}}
 3. conditions 至少 1 个、最多 8 个；优先用最少的条件表达清晰的思路。
 4. 多条件必须能同时满足，不要输出互相矛盾的条件。"""
 
@@ -127,10 +131,14 @@ def _normalize_condition(c: object) -> dict:
         right = _num_to_str(right)
     if not isinstance(right, str) or not right.strip():
         raise ValueError(f"右值非法: {right!r}")
+    right = right.strip()
+    # 兜底: AI 偶尔漏写 field: 前缀的裸字段名, 补全为规范形式
+    if not right.startswith("field:") and right in custom_signals.ALLOWED_FIELDS:
+        right = f"field:{right}"
     return {
         "left": str(left),
         "op": str(op),
-        "right": right.strip(),
+        "right": right,
         "leftDays": _norm_days(c.get("leftDays")),
         "rightDays": _norm_days(c.get("rightDays")),
     }
@@ -156,7 +164,11 @@ def _num_to_str(value) -> str:
 
 
 def _extract_json_object(text: str) -> object:
-    """从 LLM 文本提取 JSON 对象：先整体解析，再尝试围栏内 / 首个 {...}。"""
+    """从 LLM 文本提取 JSON 对象（多级容错）。
+
+    依次尝试: 整段 → markdown 围栏内 → 首个 {...} 平衡块;
+    每级再对 尾随垃圾 / 尾逗号 做轻量修复。全部失败才报错。
+    """
     source = text or ""
     candidates: list[str] = []
     stripped = source.strip()
@@ -165,15 +177,42 @@ def _extract_json_object(text: str) -> object:
     candidates.extend(
         match.group(1).strip() for match in _FENCED_JSON_RE.finditer(source)
     )
-    if not candidates:
-        candidates.append(_first_brace_block(source))
+    brace = _first_brace_block(source)
+    if brace and brace.strip() not in candidates:
+        candidates.append(brace)
     last_error: Exception | None = None
     for candidate in candidates:
+        parsed = _try_parse_json(candidate)
+        if parsed is not None:
+            return parsed
         try:
-            return json.loads(candidate)
+            json.loads(candidate)
         except json.JSONDecodeError as e:
             last_error = e
     raise ValueError(f"AI 返回的不是合法 JSON: {last_error}")
+
+
+def _try_parse_json(candidate: str) -> object | None:
+    """尽力解析一段可能带尾随垃圾 / 尾逗号的 JSON；失败返 None。"""
+    variants = [candidate.strip()]
+    last = candidate.rfind("}")
+    if last >= 0 and last < len(candidate) - 1:
+        variants.append(candidate[:last + 1].strip())
+    for v in variants:
+        if not v:
+            continue
+        try:
+            return json.loads(v)
+        except json.JSONDecodeError:
+            pass
+        # 去掉数组/对象结尾的多余逗号 (AI 常见错误): `,}` / `,]`
+        cleaned = re.sub(r",\s*([}\]])", r"\1", v)
+        if cleaned != v:
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError:
+                pass
+    return None
 
 
 def _first_brace_block(text: str) -> str:

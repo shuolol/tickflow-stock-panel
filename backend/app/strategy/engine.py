@@ -889,6 +889,19 @@ class StrategyEngine:
                     strategy_id=strategy_id,
                     exit_signal_hits=exit_signal_hits,
                 )
+            # 自定义信号前置校验: REQUIRED_FEATURES 引用的 csg_ 列未注入时,
+            # 给出明确指引, 而不是让策略代码抛 polars 缺列错 (500)。
+            # 盘中单日路径不在此校验 (该路径对带偏移信号本就优雅降级)。
+            missing_csg = [
+                name for name in s.required_features
+                if name.startswith("csg_") and name not in df.columns
+            ]
+            if missing_csg:
+                raise ValueError(
+                    "策略引用了未定义的自定义信号: "
+                    + ", ".join(sorted(missing_csg))
+                    + " — 请先在「自定义信号」管理中创建对应信号后再运行"
+                )
             df = s.filter_history_fn(df, params)
             if "date" in df.columns:
                 df = df.filter(pl.col("date") == as_of)

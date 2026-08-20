@@ -18,10 +18,20 @@ def _data_dir(request: Request) -> Path:
     return request.app.state.repo.store.data_dir
 
 
-def _invalidate() -> None:
-    """失效 pipeline 的自定义信号缓存，下次计算重新加载。"""
+def _invalidate(request: Request) -> None:
+    """失效自定义信号表达式缓存, 并清掉含旧信号列的计算缓存。
+
+    信号增删会改变注入列集合: 只清表达式缓存不够, repo 内存缓存 /
+    strategy 磁盘缓存里算好的历史窗口仍不含新 csg_ 列 (或仍含已删列),
+    需要一并清除, 否则创建信号后立即运行策略仍会报缺列。
+    """
     from app.indicators.pipeline import invalidate_custom_signals
     invalidate_custom_signals()
+    from app.services import strategy_cache
+    strategy_cache.clear_cache(_data_dir(request))
+    repo = request.app.state.repo
+    if hasattr(repo, "clear_cache"):
+        repo.clear_cache()
 
 
 class ConditionModel(BaseModel):
@@ -110,7 +120,7 @@ def save_signal(req: SignalModel, request: Request):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     custom_signals.save_one(_data_dir(request), sig)
-    _invalidate()
+    _invalidate(request)
     return {"ok": True, "signal": sig}
 
 
@@ -135,7 +145,8 @@ async def ai_generate_signal(req: AIGenerateRequest):
 
     messages = custom_signals_ai.build_messages(description)
     try:
-        text = await generate_ai_text(messages, temperature=0.2, max_tokens=1000)
+        # max_tokens 给足 8 个条件的 JSON 余量 (1000 会被复杂描述截断, 导致返回非法 JSON)
+        text = await generate_ai_text(messages, temperature=0.2, max_tokens=2000)
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -157,5 +168,5 @@ def delete_signal(signal_id: str, request: Request):
     deleted = custom_signals.delete_one(_data_dir(request), signal_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="信号不存在")
-    _invalidate()
+    _invalidate(request)
     return {"ok": True}
