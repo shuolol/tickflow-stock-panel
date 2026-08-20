@@ -41,6 +41,11 @@ _SYSTEM_PREFIX = """你是A股量化策略设计专家。根据用户描述的�
 """
 
 _META_NAMES = ("META", "STRATEGY_META", "meta")
+# 策略代码生成的最大输出 token 预算。推理模型 (deepseek-v4-pro / deepseek-r1 /
+# kimi-k2.7-code / o 系列) 会先在 reasoning_content 里大量思考, 3000 token 常在
+# 正文生成前就被 finish_reason=length 截断 → content 为空 → 解析不到 META。
+# 12000 实测 (2026-08) 对 deepseek-v4-pro 足够完成思考 + 输出完整策略文件。
+_GENERATION_MAX_TOKENS = 12000
 _FENCED_CODE_RE = re.compile(
     r"```(?P<language>[^\n`]*)\r?\n(?P<code>.*?)```",
     re.DOTALL,
@@ -163,18 +168,31 @@ class AIStrategyGenerator:
         from app.services.ai_provider import stream_ai_text
 
         guide = self._get_guide()
+        # max_tokens 要覆盖推理模型的思考+正文: deepseek-v4-pro 等推理模型
+        # 会先在 reasoning_content 里大量思考, 3000 token 常在正文开始前就
+        # finish_reason=length 截断, 导致 content 为空 → 后端报"找不到 META 字典"。
         async for chunk in stream_ai_text(
             [
                 {"role": "system", "content": _SYSTEM_PREFIX + guide},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.3,
-            max_tokens=3000,
+            max_tokens=_GENERATION_MAX_TOKENS,
         ):
             yield chunk
 
     def validate_code(self, code: str) -> dict:
         code = self._extract_code_block(code)
+
+        # AI 返回空内容 (推理模型思考超限 / 服务异常) 时给清晰报错,
+        # 而不是落到下面含糊的"找不到 META 字典"。
+        if not code.strip():
+            return {
+                "code": code,
+                "meta": {},
+                "valid": False,
+                "error": "AI 返回内容为空 (可能是推理模型输出超限截断), 请重试或检查模型/服务",
+            }
 
         # 验证
         try:
@@ -313,7 +331,7 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.3,
-            max_tokens=3000,
+            max_tokens=_GENERATION_MAX_TOKENS,
         )
         return self._extract_code_block(content)
 

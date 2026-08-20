@@ -728,8 +728,11 @@ async def ai_test(request: Request):
     try:
         text = await generate_ai_text(
             [{"role": "user", "content": "Reply exactly: OK"}],
-            temperature=0,
-            max_tokens=8,
+            # 推理模型 (deepseek-v4-pro 等) 不接受任意 temperature (会 400),
+            # 且 max_tokens=8 会被思考开销吃光 → content 为空。temperature=None
+            # (省略该参数) + 更大预算对所有模型都稳。
+            temperature=None,
+            max_tokens=64,
             timeout=15,
         )
         return {"ok": True, "model": current_ai_model() or current_ai_provider(), "response": text[:80]}

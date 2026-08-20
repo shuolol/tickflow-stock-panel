@@ -60,9 +60,15 @@ export function SettingsDataSourcesPanel() {
         allItems.find(s => s.name === name)?.datasets ?? []
       )
       const pick = (dataset: string) => (supported.has(dataset) ? name : 'tickflow')
+      // 仅除权的源(如 baostock): 只切换除权因子, 不重置日K/实时等主源选择
+      if (supported.has('adj_factor') && !supported.has('daily')
+          && !supported.has('realtime') && !supported.has('minute')) {
+        return api.updateDataProviders({ adj_factor_provider: name })
+      }
       return api.updateDataProviders({
         daily_data_provider: pick('daily'),
-        adj_factor_provider: 'same_as_daily', // 除权始终跟随日K
+        // 源支持除权才切过去; 否则跟随日K。baostock 这类除权专用源可独立选择。
+        adj_factor_provider: supported.has('adj_factor') ? name : 'same_as_daily',
         realtime_data_provider: pick('realtime'),
         minute_data_provider: pick('minute'),
         financial_data_provider: pick('financial'),
@@ -111,10 +117,18 @@ export function SettingsDataSourcesPanel() {
   const customList: DataSourceItem[] = sources.data?.custom ?? []
   const errors = sources.data?.errors ?? []
   const activeName = prefs.data?.daily_data_provider || 'tickflow'
+  // 除权因子可独立于日K选择数据源(如 baostock)。same_as_daily → 跟随日K。
+  const adjProvider = prefs.data?.adj_factor_provider
 
   // 插件 name → 状态 (供卡片渲染时判断 available/installing 等)
   const pluginMap = new Map(pluginList.map(p => [p.name, p]))
   const pluginNames = new Set(pluginList.map(p => p.name))
+  // 除权因子独立源显示名 (非 same_as_daily / tickflow 时才展示)
+  const adjProviderName = adjProvider && adjProvider !== 'same_as_daily' && adjProvider !== 'tickflow'
+    ? (customList.find(s => s.name === adjProvider)?.display_name
+       || pluginMap.get(adjProvider)?.display_name
+       || adjProvider)
+    : null
 
   // 顶部数据源选择列表 (内置 + 所有插件 + 自定义 + 新增)
   const pluginItems: DataSourceItem[] = pluginList.map(p => ({
@@ -153,19 +167,26 @@ export function SettingsDataSourcesPanel() {
           </button>
         </div>
 
-        {/* 当前数据源状态 */}
+        {/* 当前数据源状态 (日K + 独立除权源) */}
         <div className="flex items-center gap-2 mb-4 px-3 py-2.5 rounded-lg bg-elevated/30">
           <span className="text-[10px] uppercase tracking-widest text-muted">当前</span>
           <span className="h-2 w-2 rounded-full bg-accent animate-pulse" />
           <span className="text-sm font-medium text-foreground">
             {activeName === 'tickflow' ? 'TickFlow' : customList.find(s => s.name === activeName)?.display_name || activeName}
           </span>
+          {adjProviderName && adjProviderName !== (activeName === 'tickflow' ? 'TickFlow' : customList.find(s => s.name === activeName)?.display_name || activeName) && (
+            <>
+              <span className="text-muted/40">·</span>
+              <span className="text-sm font-medium text-accent">除权:{adjProviderName}</span>
+            </>
+          )}
         </div>
 
         {/* 数据源选择 - 横向卡片列表 */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
           {allItems.map(item => {
-            const isActive = activeName === item.name
+            // 使用中: 作为日K主源, 或作为独立的除权因子源 (如 baostock)
+            const isActive = activeName === item.name || adjProvider === item.name
             const isSelected = selected === item.name
             const plugin = pluginMap.get(item.name)
             const pluginUnavailable = plugin && !plugin.available
@@ -322,7 +343,7 @@ export function SettingsDataSourcesPanel() {
         >
           {selected === 'tickflow' ? (
             <TickFlowDetail
-              active={activeName === 'tickflow'}
+              active={activeName === 'tickflow' || adjProvider === 'tickflow'}
               onSwitch={() => switchProvider.mutate('tickflow')}
               switching={switchProvider.isPending}
             />
@@ -348,7 +369,7 @@ export function SettingsDataSourcesPanel() {
             /* 选中插件: 显示只读详情, 不进编辑器 */
             <PluginDetail
               plugin={pluginList.find(x => x.name === selected)!}
-              isActive={activeName === selected}
+              isActive={activeName === selected || adjProvider === selected}
               onSwitch={() => switchProvider.mutate(selected)}
               switching={switchProvider.isPending}
             />

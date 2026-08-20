@@ -1,0 +1,15 @@
+# baostock 内置可选数据源插件 — 免费 A 股除权因子
+# 无 TickFlow Starter+ 权限时,用 baostock 的 query_adjust_factor 拉取全市场复权因子,
+# 自动换算为项目 ex_factor 语义(逐事件 pre/post 比值)后写本地 adj_factor/all.parquet。
+# 仅提供 adj_factor 数据集;日K/实时等仍走原数据源。
+#
+# 安装: 点设置页「安装」→ 后端执行 uv pip install -r requirements.txt
+
+name: baostock
+display_name: "baostock（免费除权因子）"
+runtime: python
+entry: app.plugins.baostock.provider:BaostockProvider
+check: app.plugins.baostock.provider:availability
+datasets: [adj_factor]
+description: "免费 A 股除权因子数据源(baostock)。通过 query_adjust_factor 拉取沪深A股复权因子,换算为项目 ex_factor 语义。适合无 TickFlow Starter+(除权因子)权限时使用。仅提供 adj_factor 数据集。"
+install_hint: "uv pip install -r backend/app/plugins/baostock/requirements.txt"

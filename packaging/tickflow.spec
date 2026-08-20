@@ -32,6 +32,7 @@ ROOT = Path(SPECPATH).parent
 FRONTEND_DIST = str(ROOT / "frontend" / "dist")
 TIERS_YAML = str(ROOT / "tiers.yaml")
 BUILTIN_STRATEGIES = str(ROOT / "backend" / "app" / "strategy" / "builtin")
+STRATEGY_PROMPTS = str(ROOT / "backend" / "app" / "strategy" / "prompts")
 # 图标按平台选: Windows 用 .ico, macOS 用 .icns (PyInstaller 对 .ico 在
 # mac 上静默忽略, 不换格式 Dock/Finder 会显示通用图标)。两者都由
 # packaging/generate_icon.py 一并生成。
@@ -115,6 +116,10 @@ datas += [(FRONTEND_DIST, "static")]
 datas += [(TIERS_YAML, ".")]
 # 内置策略 → app/strategy/builtin/ (importlib 动态加载, 不能进 PYZ)
 datas += [(BUILTIN_STRATEGIES, "app/strategy/builtin")]
+# 策略提示词 → app/strategy/prompts/ (AI 生成读 strategy-guide-compact.md,
+# 两步定制读 strategy-builder-step2.md。漏打包会让 frozen 模式读不到指南,
+# 模型拿到空提示词 → 生成结果无顶层 META → 报"找不到 META 字典")
+datas += [(STRATEGY_PROMPTS, "app/strategy/prompts")]
 
 # ── 排除不需要的重型依赖 (主包不含 vectorbt 回测链) ──────────────────
 excludes = [

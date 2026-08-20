@@ -1693,6 +1693,10 @@ export const api = {
   pipelineRun: () => request<{ job_id: string; reused: boolean }>(
     '/api/pipeline/run', { method: 'POST' },
   ),
+  // 手动全量拉取除权因子(如 baostock 免费源) + 重算受影响 enriched
+  syncAdjFactor: () => request<{ job_id: string; reused: boolean }>(
+    '/api/pipeline/sync_adj_factor', { method: 'POST' },
+  ),
   pipelineJob: (id: string) => request<PipelineJob>(`/api/pipeline/jobs/${id}`),
   pipelineJobs: (limit = 20) =>
     request<{ active_id: string | null; jobs: PipelineJobSummary[] }>(

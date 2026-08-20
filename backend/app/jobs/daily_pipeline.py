@@ -105,6 +105,73 @@ def run_instruments_sync(repo: KlineRepository) -> dict:
     return {"instruments_rows": rows}
 
 
+def run_adj_factor_sync(repo: KlineRepository, capset: CapabilitySet,
+                        on_progress: ProgressCb | None = None) -> dict:
+    """聚焦除权因子同步(手动触发): 全量拉取 + 受影响标的 enriched 重算。
+
+    与 run_now 的区别: 只做除权因子这一步, 且**全量**(start_time=None → 从上市至今)。
+    用于首次接入 baostock 等自定义除权源时一键补齐完整复权因子链:
+      - sync_adj_factor 会路由到 adj_factor_provider (非 tickflow 且配置了 adj_factor)
+      - start_time=None → 插件拉全量历史, 保证 _apply_adj_factor 的因子链完整
+      - 受影响标的重算 enriched 前复权价 (affected 只含真正变了因子的标的)
+    """
+    from datetime import datetime
+
+    emit = on_progress or _noop
+    stage_errors: list[str] = []
+
+    emit("resolve_universe", 5, "解析标的池…")
+    universe = _resolve_universe(capset, repo)
+    emit("resolve_universe", 8, f"标的池规模:{len(universe)} 只")
+
+    emit("sync_adj", 10, "拉取除权因子(全量,上市至今)…")
+
+    def _adj_chunk_progress(cur: int, tot: int) -> None:
+        emit("sync_adj", 10 + int(50 * cur / tot),
+             f"除权因子批次 {cur}/{tot}", stage_pct=int(100 * cur / tot), skip_log=True)
+
+    written_adj, affected_symbols = kline_sync.sync_adj_factor(
+        universe, repo, capset,
+        start_time=None,  # 全量: 插件拉完整历史, 补齐因子链
+        end_time=datetime.now(),
+        on_chunk_done=_adj_chunk_progress,
+    )
+    if affected_symbols:
+        _refresh_single_view(repo, "adj_factor")
+        emit("sync_adj", 62, f"除权因子完成,新增 {len(affected_symbols)} 只个股")
+    else:
+        emit("sync_adj", 62, "除权因子完成,无新增事件")
+    _invalidate("adj_factor")
+
+    # Step 2: 重算 enriched 前复权价
+    enriched_dir = repo.store.data_dir / "kline_daily_enriched"
+    enriched_exists = enriched_dir.exists() and any(enriched_dir.glob("date=*"))
+    emit("compute_enriched", 65,
+         "全量计算 enriched…" if (not enriched_exists)
+         else f"重算 enriched ({len(affected_symbols)} 只个股)…")
+
+    def _enriched_batch_progress(cur: int, tot: int) -> None:
+        emit("compute_enriched", 65 + int(30 * cur / tot),
+             f"计算指标 批次 {cur}/{tot}", stage_pct=int(100 * cur / tot), skip_log=True)
+
+    written_enriched = 0
+    if not enriched_exists:
+        written_enriched = run_pipeline(on_batch_done=_enriched_batch_progress)
+    elif affected_symbols:
+        written_enriched = run_pipeline(symbols=affected_symbols, on_batch_done=_enriched_batch_progress)
+    _refresh_single_view(repo, "kline_enriched")
+    _invalidate("enriched")
+
+    if stage_errors:
+        raise PipelineStageError("; ".join(stage_errors))
+    emit("done", 100, "完成")
+    return {
+        "universe_size": len(universe),
+        "adj_factor_symbols": len(affected_symbols),
+        "enriched_days": written_enriched,
+    }
+
+
 def run_now(
     repo: KlineRepository,
     capset: CapabilitySet,

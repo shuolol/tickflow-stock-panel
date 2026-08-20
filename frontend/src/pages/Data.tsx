@@ -42,6 +42,7 @@ import { ScheduleEditor } from '@/components/data/ScheduleEditor'
 import { ExtendHistoryPanel } from '@/components/data/ExtendHistoryPanel'
 import { RepairDailyPanel } from '@/components/data/RepairDailyPanel'
 import { EnrichedRebuildPanel } from '@/components/data/EnrichedRebuildPanel'
+import { AdjFactorSyncPanel } from '@/components/data/AdjFactorSyncPanel'
 import { MinuteSyncConfig } from '@/components/data/MinuteSyncConfig'
 import { RegimeConfigCard } from '@/components/data/RegimeConfigCard'
 import { PipelineScopeConfig } from '@/components/data/PipelineScopeConfig'
@@ -178,6 +179,13 @@ export function Data() {
   const activeDataSourceName = activeProvider === 'tickflow'
     ? 'TickFlow'
     : (dataSources.data?.custom?.find(s => s.name === activeProvider)?.display_name || activeProvider)
+  // 除权因子可独立于日K选择数据源 (如 baostock 免费源) — 独立解析显示名
+  const adjProviderPref = prefs.data?.adj_factor_provider
+  const adjProviderName = adjProviderPref && adjProviderPref !== 'tickflow' && adjProviderPref !== 'same_as_daily'
+    ? (dataSources.data?.plugins?.find(s => s.name === adjProviderPref)?.display_name
+       || dataSources.data?.custom?.find(s => s.name === adjProviderPref)?.display_name
+       || adjProviderPref)
+    : null
 
   // tierKey → 自定义数据集名映射 (用于数据画像 CapBadge 显示数据源名而非 TickFlow 档位)
   const TIERKEY_TO_DATASET: Record<string, string> = {
@@ -193,6 +201,8 @@ export function Data() {
     : new Set<string>()
   // 给定 tierKey, 返回 custom provider 显示名 (走 custom 时) 或 null (走 TickFlow)
   const getCustomProviderName = (tierKey: string): string | null => {
+    // 除权因子有独立 provider 偏好 (如 baostock), 即使日K走 tickflow 也单独展示
+    if (tierKey === 'adj_factor') return adjProviderName
     if (activeProvider === 'tickflow') return null
     const ds = TIERKEY_TO_DATASET[tierKey]
     if (ds && activeCustomDatasets.has(ds)) return activeDataSourceName
@@ -245,9 +255,13 @@ export function Data() {
   const hasMinuteCap = !!caps.data?.capabilities?.['kline.minute.batch']
   const indexAuto = prefs.data?.pipeline_pull_index ?? true
   const etfAuto = prefs.data?.pipeline_pull_etf ?? false
+  // 除权同步开关: 有 TickFlow 能力, 或除权因子走自定义源(如 baostock)时都会拉取
+  const adjSourceActive = hasAdjCap || (
+    !!adjProviderPref && adjProviderPref !== 'tickflow' && adjProviderPref !== 'same_as_daily'
+  )
   const pipelineSteps = [
     '日K',
-    ...(hasAdjCap ? ['复权'] : []),
+    ...(adjSourceActive ? ['复权'] : []),
     '指标',
     ...(indexAuto ? ['指数'] : []),
     ...(etfAuto ? ['ETF'] : []),
@@ -434,6 +448,8 @@ export function Data() {
             customProvider={getCustomProviderName('adj_factor')}
             auto
             onShowFields={() => setSchemaTable('adj_factor')}
+            onSettings={hasData ? () => setOpenSettings(v => v === 'adj_factor' ? null : 'adj_factor') : undefined}
+            settingsOpen={openSettings === 'adj_factor'}
           />
         )
       case 'enriched':
@@ -998,6 +1014,17 @@ export function Data() {
         {openSettings === 'enriched' && (
           <SettingsModal title="Enriched · 计算设置" onClose={() => setOpenSettings(null)}>
             <EnrichedRebuildPanel
+              isRunning={!!activeJobId}
+              onStart={(jobId) => { setActiveJobId(jobId); setOpenSettings(null) }}
+            />
+          </SettingsModal>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {openSettings === 'adj_factor' && (
+          <SettingsModal title="除权因子 · 数据源与拉取" onClose={() => setOpenSettings(null)}>
+            <AdjFactorSyncPanel
               isRunning={!!activeJobId}
               onStart={(jobId) => { setActiveJobId(jobId); setOpenSettings(null) }}
             />

@@ -75,6 +75,75 @@ async def run_now(request: Request) -> dict:
     return {"job_id": job_id, "reused": False}
 
 
+# 除权因子聚焦同步(手动拉取)的单飞超时: 全市场全量历史, 比普通管道慢。
+# baostock 逐标的查询 + 限速 sleep, 5500 只约 20-30 分钟。90 分钟阈值防误杀。
+_ADJ_SYNC_TIMEOUT_S = 5400
+
+
+@router.post("/sync_adj_factor")
+async def sync_adj_factor(request: Request) -> dict:
+    """手动触发除权因子全量拉取(如 baostock 免费源), 并重算受影响 enriched。
+
+    与 /run 不同: 只做除权因子这一步, 且从上市至今全量(补齐因子链)。
+    仅当除权因子数据源配置为 baostock 等自定义插件(非 TickFlow)时可用。
+    同样单飞 + 进度轮询, 返回 {job_id, reused}。
+    """
+    from app.services import preferences as _prefs
+    from app.data_providers import custom as custom_sources
+
+    # 校验: 除权因子当前确实走自定义源 (TickFlow 无权限时无需手动拉, 直接报错提示)
+    adj_provider = _prefs.get_adj_factor_provider()
+    if adj_provider == "same_as_daily":
+        adj_provider = _prefs.get_daily_data_provider()
+    if adj_provider == "tickflow" or not custom_sources.provider_has_dataset(adj_provider, "adj_factor"):
+        raise HTTPException(
+            status_code=400,
+            detail="当前除权因子来源是 TickFlow(或未配置自定义除权源), 无需手动拉取。"
+                   "请先在 设置→数据源 中把除权因子切换为 baostock 等免费插件。",
+        )
+
+    repo = request.app.state.repo
+    capset = request.app.state.capabilities
+
+    job_store.reap_stale()
+    job_id, is_new = job_store.create(timeout_s=_ADJ_SYNC_TIMEOUT_S)
+    if not is_new:
+        return {"job_id": job_id, "reused": True}
+
+    async def task() -> None:
+        if not try_acquire_run_slot():
+            job_store.fail(job_id, "已有数据任务在运行(或上一次任务卡死未结束),请稍后再试")
+            return
+        qs = getattr(request.app.state, "quote_service", None)
+        try:
+            job_store.start(job_id)
+            loop = asyncio.get_event_loop()
+
+            def progress(stage: str, pct: int, msg: str, stage_pct: int | None = None,
+                         skip_log: bool = False) -> None:
+                job_store.progress(job_id, stage, pct, msg, stage_pct=stage_pct, skip_log=skip_log)
+
+            def _run() -> dict:
+                if qs:
+                    with qs.paused():
+                        return daily_pipeline.run_adj_factor_sync(repo, capset, on_progress=progress)
+                return daily_pipeline.run_adj_factor_sync(repo, capset, on_progress=progress)
+
+            result = await loop.run_in_executor(_long_task_executor, _run)
+            job_store.succeed(job_id, result)
+            invalidate_storage_cache()
+            repo.refresh_cache()
+        except Exception as e:  # noqa: BLE001
+            logger.exception("sync_adj_factor job failed")
+            job_store.fail(job_id, str(e))
+            invalidate_storage_cache()
+        finally:
+            release_run_slot()
+
+    asyncio.create_task(task())
+    return {"job_id": job_id, "reused": False}
+
+
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str) -> dict:
     # 每次轮询都检查卡死 job — 前端每秒轮询,STALE_JOB_TIMEOUT_S(10min)后必定自愈,

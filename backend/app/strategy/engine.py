@@ -137,6 +137,25 @@ def _parse_composite_children(raw: Any) -> CompositeSpec:
     return CompositeSpec(children=tuple(children))
 
 
+def _param_default_lookback_days(meta: dict) -> int | None:
+    """从 META["params"] 里 id=lookback_days 的参数默认值推断回看窗口。
+
+    AI 生成策略常把回看窗口暴露为可调参数 (META["params"] 中的 lookback_days),
+    而非模块级 LOOKBACK_DAYS 常量。若引擎只看顶层常量会误判为 1 →
+    required_history_bars 不加载历史窗口 → filter_history 策略运行时抛
+    "strategy ... requires history data"。运行时策略用 params.get("lookback_days"),
+    这里对齐该语义, 用参数默认值兜底。
+    """
+    for item in meta.get("params") or []:
+        if isinstance(item, dict) and item.get("id") == "lookback_days":
+            value = item.get("default")
+            try:
+                return int(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 @dataclass
 class StrategyDataContext:
     """一次策略调用所需的标准数据上下文。"""
@@ -525,7 +544,12 @@ class StrategyEngine:
             filter_history_fn=filter_history_fn,
             required_features=frozenset(meta.get("required_features", []) or [])
             | frozenset(getattr(mod, "REQUIRED_FEATURES", []) or []),
-            lookback_days=int(getattr(mod, "LOOKBACK_DAYS", meta.get("lookback_days", 1)) or 1),
+            lookback_days=int(
+                getattr(mod, "LOOKBACK_DAYS", None)
+                or meta.get("lookback_days")
+                or _param_default_lookback_days(meta)
+                or 1
+            ),
             source=source,
             file_path=path,
             execution_backend=execution_backend,
