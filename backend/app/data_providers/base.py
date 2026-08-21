@@ -48,8 +48,13 @@ class MarketDataProvider(Protocol):
         start_time: datetime | None,
         end_time: datetime | None,
         asset_type: AssetType,
+        time_budget_s: float | None = None,
     ) -> pl.DataFrame:
-        """Return normalized adjustment factors: symbol/trade_date/ex_factor."""
+        """Return normalized adjustment factors: symbol/trade_date/ex_factor.
+
+        time_budget_s: 可选时间预算(秒)。逐标的慢源(如 baostock 逐代码查询)超过
+        预算后应提前返回已收集部分(部分完成, 不抛错), 由上层决定降级策略。
+        """
 
     def get_minute(
         self,

@@ -79,6 +79,7 @@ class TickFlowProvider:
         start_time: datetime | None,
         end_time: datetime | None,
         asset_type: AssetType,  # noqa: ARG002
+        time_budget_s: float | None = None,  # noqa: ARG002
     ) -> pl.DataFrame:
         if not symbols:
             return pl.DataFrame()

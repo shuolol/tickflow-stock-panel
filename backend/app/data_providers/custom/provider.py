@@ -102,6 +102,7 @@ class GenericHTTPProvider:
         end_time: datetime | None,
         asset_type: str = "stock",  # noqa: ARG002
         on_chunk_done=None,
+        time_budget_s: float | None = None,  # noqa: ARG002
     ) -> pl.DataFrame:
         cfg = self._dataset("adj_factor")
         frames: list[pl.DataFrame] = []

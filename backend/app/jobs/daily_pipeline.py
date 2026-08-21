@@ -30,6 +30,16 @@ logger = logging.getLogger(__name__)
 
 ProgressCb = Callable[..., None]
 
+# 除权因子同步时间预算(秒)。baostock 等逐标的慢源对全市场 5550 只逐只查询,
+# 无预算时可能远超任务超时 → 拖垮整条管道。预算内完成则正常, 超预算提前返回
+# 部分结果(软失败, 不阻断管道), 由专门的除权因子全量同步按钮补齐。
+#   - 修正/补数据(override_start_date): 任务超时已放宽到 90 分钟, 给除权因子 40 分钟
+#   - 盘后日常管道: 任务超时 1200s, 预算压到 10 分钟, 避免除权因子挤爆整条管道
+#   - 除权因子全量按钮: 它自己的任务超时 5400s, 预算 80 分钟
+_ADJ_SYNC_BUDGET_REPAIR_S = 2400
+_ADJ_SYNC_BUDGET_NORMAL_S = 600
+_ADJ_SYNC_BUDGET_FULL_S = 4800
+
 
 class PipelineStageError(RuntimeError):
     """管道有阶段软失败(数据可能陈旧)时抛出, 让上层 job_store 把任务标记为 failed。
@@ -126,7 +136,10 @@ def run_adj_factor_sync(repo: KlineRepository, capset: CapabilitySet,
 
     emit("sync_adj", 10, "拉取除权因子(全量,上市至今)…")
 
+    _adj_progress: dict = {"cur": 0, "tot": 0}
+
     def _adj_chunk_progress(cur: int, tot: int) -> None:
+        _adj_progress.update(cur=cur, tot=tot)
         emit("sync_adj", 10 + int(50 * cur / tot),
              f"除权因子批次 {cur}/{tot}", stage_pct=int(100 * cur / tot), skip_log=True)
 
@@ -135,12 +148,25 @@ def run_adj_factor_sync(repo: KlineRepository, capset: CapabilitySet,
         start_time=None,  # 全量: 插件拉完整历史, 补齐因子链
         end_time=datetime.now(),
         on_chunk_done=_adj_chunk_progress,
+        time_budget_s=_ADJ_SYNC_BUDGET_FULL_S,
     )
+    adj_partial = _adj_progress["tot"] > 0 and _adj_progress["cur"] < _adj_progress["tot"]
     if affected_symbols:
         _refresh_single_view(repo, "adj_factor")
-        emit("sync_adj", 62, f"除权因子完成,新增 {len(affected_symbols)} 只个股")
+        msg = f"除权因子完成,新增 {len(affected_symbols)} 只个股"
+        if adj_partial:
+            msg += f" (预算内处理 {_adj_progress['cur']}/{_adj_progress['tot']} 批,部分标的未更新)"
+        emit("sync_adj", 62, msg)
+        logger.info("run_adj_factor_sync: %d symbols", len(affected_symbols))
     else:
-        emit("sync_adj", 62, "除权因子完成,无新增事件")
+        msg = "除权因子完成,无新增事件"
+        if adj_partial:
+            msg += f" (预算内处理 {_adj_progress['cur']}/{_adj_progress['tot']} 批,部分标的未更新)"
+        emit("sync_adj", 62, msg)
+        logger.info("run_adj_factor_sync: no new factors")
+    if adj_partial:
+        logger.warning("run_adj_factor_sync: 除权因子预算内未完成全量 (%s/%s 批), 部分标的因子未更新",
+                       _adj_progress["cur"], _adj_progress["tot"])
     _invalidate("adj_factor")
 
     # Step 2: 重算 enriched 前复权价
@@ -168,6 +194,7 @@ def run_adj_factor_sync(repo: KlineRepository, capset: CapabilitySet,
     return {
         "universe_size": len(universe),
         "adj_factor_symbols": len(affected_symbols),
+        "adj_factor_partial": adj_partial,
         "enriched_days": written_enriched,
     }
 
@@ -319,6 +346,7 @@ def run_now(
     #     (这两类分支不拉历史日K, 除权不能用日K范围, 只能兜底最近几日)
     written_adj = 0
     affected_symbols: list[str] = []
+    adj_partial = False  # 除权因子是否预算内未完成(部分标的因子未更新)
     adj_provider = _prefs.get_adj_factor_provider()
     if adj_provider == "same_as_daily":
         adj_provider = _prefs.get_daily_data_provider()
@@ -337,21 +365,39 @@ def run_now(
         emit("sync_adj", 50, f"获取除权因子 [{adj_start_str} ~ {adj_end_str}]…")
         logger.info("sync_adj: [%s ~ %s] start", adj_start_str, adj_end_str)
 
+        # 除权因子时间预算: 修正路径任务超时已放宽到 90 分钟, 给足 40 分钟;
+        # 盘后日常任务超时 1200s, 预算压到 10 分钟 —— 逐标的慢源(baostock)超预算
+        # 提前返回部分结果, 除权因子按软失败处理, 不再拖垮整条管道。
+        adj_budget_s = _ADJ_SYNC_BUDGET_REPAIR_S if override_start_date else _ADJ_SYNC_BUDGET_NORMAL_S
+        _adj_progress: dict = {"cur": 0, "tot": 0}
+
         def _adj_chunk_progress(cur: int, tot: int) -> None:
+            _adj_progress.update(cur=cur, tot=tot)
             emit("sync_adj", 50 + int(10 * cur / tot),
                  f"除权因子批次 {cur}/{tot}", stage_pct=int(100 * cur / tot), skip_log=True)
         written_adj, affected_symbols = kline_sync.sync_adj_factor(
             universe, repo, capset,
             start_time=adj_start, end_time=adj_end,
             on_chunk_done=_adj_chunk_progress,
+            time_budget_s=adj_budget_s,
         )
+        adj_partial = _adj_progress["tot"] > 0 and _adj_progress["cur"] < _adj_progress["tot"]
         if affected_symbols:
             _refresh_single_view(repo, "adj_factor")
-            emit("sync_adj", 60, f"除权因子完成,新增 {len(affected_symbols)} 只个股")
+            msg = f"除权因子完成,新增 {len(affected_symbols)} 只个股"
+            if adj_partial:
+                msg += f" (预算内处理 {_adj_progress['cur']}/{_adj_progress['tot']} 批,部分标的未更新)"
+            emit("sync_adj", 60, msg)
             logger.info("sync_adj: [%s ~ %s] done, %d symbols", adj_start_str, adj_end_str, len(affected_symbols))
         else:
-            emit("sync_adj", 60, "除权因子完成,无新增")
+            msg = "除权因子完成,无新增"
+            if adj_partial:
+                msg += f" (预算内处理 {_adj_progress['cur']}/{_adj_progress['tot']} 批,部分标的未更新)"
+            emit("sync_adj", 60, msg)
             logger.info("sync_adj: [%s ~ %s] no new factors", adj_start_str, adj_end_str)
+        if adj_partial:
+            logger.warning("sync_adj: 除权因子预算内未完成全量 (%s/%s 批), 部分标的因子未更新, "
+                           "可稍后重试或点除权因子全量同步", _adj_progress["cur"], _adj_progress["tot"])
         _invalidate("adj_factor")
     else:
         skipped.append("sync_adj")
@@ -620,6 +666,7 @@ def run_now(
         "universe_size": len(universe),
         "daily_days": new_daily_days,
         "adj_factor_symbols": len(affected_symbols),
+        "adj_factor_partial": adj_partial,
         "enriched_days": written_enriched,
         "index_count": index_count,
         "index_daily_rows": written_index_daily,

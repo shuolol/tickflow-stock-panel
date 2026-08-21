@@ -323,11 +323,15 @@ def sync_adj_factor(symbols: list[str], repo: KlineRepository,
                     start_time: datetime | None = None,
                     end_time: datetime | None = None,
                     on_chunk_done: Callable[[int, int], None] | None = None,
-                    asset_type: str = "stock") -> tuple[int, list[str]]:
+                    asset_type: str = "stock",
+                    time_budget_s: float | None = None) -> tuple[int, list[str]]:
     """同步除权因子(Starter+)。SDK 接口:`tf.klines.ex_factors(symbols=...)`。
 
     支持增量: 传 start_time/end_time 只拉取该时间范围内的新除权事件。
     返回 (写入行数, 受影响的 symbol 列表) — 供 enriched 局部重算使用。
+
+    time_budget_s: 可选时间预算(秒), 转发给逐标的慢源(baostock 等)。超过预算后
+    provider 提前返回部分数据, 由调用方把除权因子当软失败处理(不阻断管道)。
     """
     if not symbols:
         return 0, []
@@ -345,6 +349,7 @@ def sync_adj_factor(symbols: list[str], repo: KlineRepository,
                 end_time=end_time,
                 asset_type=asset_type,
                 on_chunk_done=on_chunk_done,
+                time_budget_s=time_budget_s,
             )
             if new_data.is_empty():
                 return 0, []

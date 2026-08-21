@@ -34,11 +34,17 @@ logger = logging.getLogger(__name__)
 _DATASETS = ("adj_factor",)
 
 # 每次【完整链】查询间隔秒数。baostock 免费服务有 ~3000 req/hr 限流, 全市场逐标的
-# 一路猛打会触发断连。0.15s → 5500 只约 20 分钟, 手动按钮(全量)场景可接受。
-# 增量模式(每日管道)先做便宜【窗口探测】只对确有新事件的标的多拉完整链 → 日常开销小。
+# 一路猛打会触发断连/限流。增量模式(每日管道)先做便宜【窗口探测】只对确有新事件的
+# 标的多拉完整链 → 日常开销小。
 _QUERY_INTERVAL_S = 0.15
 # 窗口探测查询间隔: 轻查询, 每标的一次、每日一次突发, 用小间隔防断连即可。
 _PROBE_INTERVAL_S = 0.03
+
+# baostock 底层 socket 无超时(send_msg 的 recv 会无限阻塞)。服务端限流停止响应时
+# 单次查询可卡死整个同步 → 登录后给 socket 设 recv 超时, 单查询最久等这么久。
+# (真超时会被 baostock 吞成 error_code, _query_factors 抛 RuntimeError → 逐标的
+# except 捕获后走重连分支, 不会冻住。)
+_SOCKET_TIMEOUT_S = 30
 
 # 项目 symbol (600000.SH / 000001.SZ / 830000.BJ) → baostock code (sh.600000 / sz.000001)
 _EXCHANGE_PREFIX = {"SH": "sh", "SZ": "sz"}
@@ -136,6 +142,50 @@ def _derive_ex_factors(fac: pl.DataFrame, symbol: str) -> pl.DataFrame:
     )
 
 
+def _set_socket_timeout(timeout_s: float) -> None:
+    """给 baostock 全局 socket 设 recv 超时, 防止单查询无限阻塞。
+
+    baostock 底层 socket 默认无超时, 服务端限流停止响应时 recv 会永久阻塞。
+    这里对每个新 socket 设 _SOCKET_TIMEOUT_S。测试注入的 fake 模块没有 baostock.common,
+    静默跳过即可。
+    """
+    try:
+        from baostock.common import context as bs_ctx
+    except Exception:  # noqa: BLE001
+        return
+    sock = getattr(bs_ctx, "default_socket", None)
+    if sock is None:
+        return
+    try:
+        sock.settimeout(timeout_s)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _reconnect_bs() -> bool:
+    """限流断连/查询失败后重建 baostock 连接(重置 socket 状态), 成功返回 True。
+
+    send_msg 内部把 socket.timeout/断连吞成 error_code, _query_factors 只能看到
+    RuntimeError。失败即重连是最稳妥的: 连接是轻量 round-trip, 且能清掉半读状态。
+    """
+    import baostock as bs
+
+    try:
+        bs.logout()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        lg = bs.login()
+        if lg.error_code != "0":
+            logger.warning("baostock 重连失败: %s", lg.error_msg)
+            return False
+    except Exception as e:  # noqa: BLE001
+        logger.warning("baostock 重连异常: %s", e)
+        return False
+    _set_socket_timeout(_SOCKET_TIMEOUT_S)
+    return True
+
+
 class BaostockProvider:
     """内置 baostock 除权因子数据源。"""
 
@@ -156,6 +206,7 @@ class BaostockProvider:
         end_time: datetime | None = None,
         asset_type: str = "stock",  # noqa: ARG002
         on_chunk_done=None,
+        time_budget_s: float | None = None,
     ) -> pl.DataFrame:
         if not symbols:
             return pl.DataFrame()
@@ -168,6 +219,7 @@ class BaostockProvider:
         if lg.error_code != "0":
             logger.warning("baostock login failed: %s", lg.error_msg)
             raise RuntimeError(f"baostock 登录失败: {lg.error_msg}")
+        _set_socket_timeout(_SOCKET_TIMEOUT_S)
 
         end = _to_date(end_time) or date.today()
         end_str = end.strftime("%Y-%m-%d")
@@ -182,10 +234,21 @@ class BaostockProvider:
         incremental = start_d is not None
         start_str = start_d.strftime("%Y-%m-%d") if incremental else _EPOCH
 
+        # 时间预算: 超过后提前返回部分结果, 由上层把除权因子当软失败处理(不拖垮管道)。
+        # baostock 逐标的查询 + 限速, 全市场 5550 只可能远慢于任务超时 → 预算兜底。
+        t0 = time.monotonic()
+        bailed = False
+        processed = 0
+        total = len(symbols)
+
         try:
             chunks = chunked(symbols, 100)
             for i, chunk in enumerate(chunks):
                 for sym in chunk:
+                    if time_budget_s is not None and time.monotonic() - t0 >= time_budget_s:
+                        bailed = True
+                        break
+                    processed += 1
                     bs_code = _to_bs_code(sym)
                     if bs_code is None:
                         if sym.upper().endswith(".BJ"):
@@ -215,14 +278,21 @@ class BaostockProvider:
                     except Exception as e:  # noqa: BLE001
                         logger.warning("baostock adj 拉取失败 %s: %s", sym, e)
                         failed.append(sym)
+                        # 限流/断连后 socket 可能处于半读状态 → 重连重置, 否则后续
+                        # 查询会连环失败。连接是轻量 round-trip, 失败时重连是安全兜底。
+                        _reconnect_bs()
                         continue
                     # 完整链查询是限流持续成本主因 → 节流; 窗口探测是小突发, 用更小间隔
                     if did_full and _QUERY_INTERVAL_S:
                         time.sleep(_QUERY_INTERVAL_S)
                     elif _PROBE_INTERVAL_S:
                         time.sleep(_PROBE_INTERVAL_S)
+                # 无论本 chunk 是否因预算中断, 都上报当前进度, 让上层能据 cur < tot
+                # 判定除权因子部分完成。
                 if on_chunk_done:
                     on_chunk_done(i + 1, len(chunks))
+                if bailed:
+                    break
         finally:
             try:
                 bs.logout()
@@ -231,7 +301,11 @@ class BaostockProvider:
 
         if skipped_bj:
             logger.info("baostock adj: 跳过 %d 只北交所标的 (baostock 不覆盖)", skipped_bj)
-        if failed:
+        if bailed:
+            logger.warning("baostock adj 超时: 预算 %ss 内仅处理 %d/%d 只标的, "
+                           "部分标的因子未更新 (可稍后重试或点除权因子全量同步)",
+                           time_budget_s, processed, total)
+        elif failed:
             logger.warning("baostock adj 部分失败: %d 只标的未获取 (样例: %s)",
                            len(failed), failed[:10])
 

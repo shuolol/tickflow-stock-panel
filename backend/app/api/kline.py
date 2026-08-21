@@ -1087,8 +1087,11 @@ async def repair_daily(request: Request):
         from app.services.repair_daily import run_repair_daily
         from app.services.pipeline_jobs import job_store, release_run_slot, try_acquire_run_slot
         from app.api.data import invalidate_storage_cache
+        from app.api.pipeline import _ADJ_SYNC_TIMEOUT_S
 
-        job_id, is_new = job_store.create()
+        # 修正走盘后管道全流程, 含除权因子同步。baostock 等逐标的慢源可能远慢于
+        # 默认 1200s → 放宽到与除权因子端点一致的 90 分钟, 避免中途被误杀。
+        job_id, is_new = job_store.create(timeout_s=_ADJ_SYNC_TIMEOUT_S)
         if not is_new:
             return {"status": "reused", "job_id": job_id}
 
