@@ -42,7 +42,6 @@ import { ScheduleEditor } from '@/components/data/ScheduleEditor'
 import { ExtendHistoryPanel } from '@/components/data/ExtendHistoryPanel'
 import { RepairDailyPanel } from '@/components/data/RepairDailyPanel'
 import { EnrichedRebuildPanel } from '@/components/data/EnrichedRebuildPanel'
-import { AdjFactorSyncPanel } from '@/components/data/AdjFactorSyncPanel'
 import { MinuteSyncConfig } from '@/components/data/MinuteSyncConfig'
 import { RegimeConfigCard } from '@/components/data/RegimeConfigCard'
 import { PipelineScopeConfig } from '@/components/data/PipelineScopeConfig'
@@ -169,46 +168,6 @@ export function Data() {
 
   const prefs = usePreferences()
 
-  // 数据源列表 + 当前数据源 (顶部"切换数据源"按钮展示)
-  const dataSources = useQuery({
-    queryKey: QK.dataSources,
-    queryFn: api.dataSources,
-    staleTime: 60_000,
-  })
-  const activeProvider = prefs.data?.daily_data_provider || 'tickflow'
-  const activeDataSourceName = activeProvider === 'tickflow'
-    ? 'TickFlow'
-    : (dataSources.data?.custom?.find(s => s.name === activeProvider)?.display_name || activeProvider)
-  // 除权因子可独立于日K选择数据源 (如 baostock 免费源) — 独立解析显示名
-  const adjProviderPref = prefs.data?.adj_factor_provider
-  const adjProviderName = adjProviderPref && adjProviderPref !== 'tickflow' && adjProviderPref !== 'same_as_daily'
-    ? (dataSources.data?.plugins?.find(s => s.name === adjProviderPref)?.display_name
-       || dataSources.data?.custom?.find(s => s.name === adjProviderPref)?.display_name
-       || adjProviderPref)
-    : null
-
-  // tierKey → 自定义数据集名映射 (用于数据画像 CapBadge 显示数据源名而非 TickFlow 档位)
-  const TIERKEY_TO_DATASET: Record<string, string> = {
-    daily: 'daily',
-    adj_factor: 'adj_factor',
-    etf: 'daily',        // ETF 复用日K能力
-    minute: 'minute',
-    financials: 'financial',
-  }
-  // 当前 custom 源支持的数据集集合
-  const activeCustomDatasets = activeProvider !== 'tickflow'
-    ? new Set(dataSources.data?.custom?.find(s => s.name === activeProvider)?.datasets || [])
-    : new Set<string>()
-  // 给定 tierKey, 返回 custom provider 显示名 (走 custom 时) 或 null (走 TickFlow)
-  const getCustomProviderName = (tierKey: string): string | null => {
-    // 除权因子有独立 provider 偏好 (如 baostock), 即使日K走 tickflow 也单独展示
-    if (tierKey === 'adj_factor') return adjProviderName
-    if (activeProvider === 'tickflow') return null
-    const ds = TIERKEY_TO_DATASET[tierKey]
-    if (ds && activeCustomDatasets.has(ds)) return activeDataSourceName
-    return null
-  }
-
   const minuteAuto = prefs.data?.minute_sync_enabled ?? false
   const pipelineSched = prefs.data?.pipeline_schedule ?? { hour: 15, minute: 30 }
   const instrumentsSched = prefs.data?.instruments_schedule ?? { hour: 9, minute: 10 }
@@ -255,6 +214,8 @@ export function Data() {
   const hasMinuteCap = !!caps.data?.capabilities?.['kline.minute.batch']
   const indexAuto = prefs.data?.pipeline_pull_index ?? true
   const etfAuto = prefs.data?.pipeline_pull_etf ?? false
+  // 除权因子独立数据源偏好 (判断除权是否走自定义源, 如 baostock)
+  const adjProviderPref = prefs.data?.adj_factor_provider
   // 除权同步开关: 有 TickFlow 能力, 或除权因子走自定义源(如 baostock)时都会拉取
   const adjSourceActive = hasAdjCap || (
     !!adjProviderPref && adjProviderPref !== 'tickflow' && adjProviderPref !== 'same_as_daily'
@@ -424,7 +385,6 @@ export function Data() {
             tierKey="daily"
             capLimits={caps.data?.capabilities}
             tierLabel={caps.data?.label}
-            customProvider={getCustomProviderName('daily')}
             auto
             onShowFields={() => setSchemaTable('daily')}
             onSettings={hasData ? () => setOpenSettings(v => v === 'daily' ? null : 'daily') : undefined}
@@ -445,10 +405,8 @@ export function Data() {
             tierKey="adj_factor"
             capLimits={caps.data?.capabilities}
             tierLabel={caps.data?.label}
-            customProvider={getCustomProviderName('adj_factor')}
             auto
             onShowFields={() => setSchemaTable('adj_factor')}
-            onSettings={hasData ? () => setOpenSettings(v => v === 'adj_factor' ? null : 'adj_factor') : undefined}
             settingsOpen={openSettings === 'adj_factor'}
           />
         )
@@ -510,7 +468,6 @@ export function Data() {
             tierKey="etf"
             capLimits={caps.data?.capabilities}
             tierLabel={caps.data?.label}
-            customProvider={getCustomProviderName('etf')}
             auto={etfAuto}
             subLabel="维表 · 日K · 指标"
             fieldTabs={[
@@ -535,7 +492,6 @@ export function Data() {
             tierKey="minute"
             capLimits={caps.data?.capabilities}
             tierLabel={caps.data?.label}
-            customProvider={getCustomProviderName('minute')}
             auto={minuteAuto}
             onShowFields={() => setSchemaTable('minute')}
             onSettings={hasData ? () => setOpenSettings(v => v === 'minute' ? null : 'minute') : undefined}
@@ -553,7 +509,6 @@ export function Data() {
             tierKey="financials"
             capLimits={caps.data?.capabilities}
             tierLabel={caps.data?.label}
-            customProvider={getCustomProviderName('financials')}
             subLabel={`历史股本 · ${historicalShareRows.toLocaleString()} 条`}
             onSettings={hasData ? () => setOpenSettings(v => v === 'financials' ? null : 'financials') : undefined}
             settingsOpen={openSettings === 'financials'}
@@ -647,14 +602,6 @@ export function Data() {
                 页面设置
               </button>
               <div className="w-px h-4 bg-border" />
-              <Link
-                to="/settings?tab=data-sources"
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-btn text-secondary hover:text-accent hover:bg-accent/8 text-xs transition-colors duration-150"
-                title="切换数据源"
-              >
-                <Database className="h-3.5 w-3.5" />
-                <span className="text-foreground/80 max-w-[120px] truncate">{activeDataSourceName}</span>
-              </Link>
               <button
                 onClick={() => setShowClearConfirm(true)}
                 disabled={isRunning}
@@ -1014,17 +961,6 @@ export function Data() {
         {openSettings === 'enriched' && (
           <SettingsModal title="Enriched · 计算设置" onClose={() => setOpenSettings(null)}>
             <EnrichedRebuildPanel
-              isRunning={!!activeJobId}
-              onStart={(jobId) => { setActiveJobId(jobId); setOpenSettings(null) }}
-            />
-          </SettingsModal>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {openSettings === 'adj_factor' && (
-          <SettingsModal title="除权因子 · 数据源与拉取" onClose={() => setOpenSettings(null)}>
-            <AdjFactorSyncPanel
               isRunning={!!activeJobId}
               onStart={(jobId) => { setActiveJobId(jobId); setOpenSettings(null) }}
             />
