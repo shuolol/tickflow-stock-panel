@@ -4,9 +4,10 @@ import { FactorBacktest } from './backtest/FactorBacktest'
 import { StrategyBacktest } from './backtest/StrategyBacktest'
 import { StrategyOptimizer } from './backtest/StrategyOptimizer'
 import { StrategyWalkForward } from './backtest/StrategyWalkForward'
-import { BarChart3, FlaskConical, SlidersHorizontal, Waypoints } from 'lucide-react'
+import { BacktestHistory } from './backtest/BacktestHistory'
+import { BarChart3, FlaskConical, History, SlidersHorizontal, Waypoints } from 'lucide-react'
 
-type Tab = 'factor' | 'strategy' | 'optimizer' | 'walkforward'
+type Tab = 'factor' | 'strategy' | 'optimizer' | 'walkforward' | 'history'
 
 const MODES: Record<Tab, { title: string; subtitle: string; hint: string }> = {
   factor: {
@@ -29,6 +30,11 @@ const MODES: Record<Tab, { title: string; subtitle: string; hint: string }> = {
     subtitle: '滚动窗口样本外验证',
     hint: '每折训练区间优化、测试区间验证，看样本外是否退化以识别过拟合。',
   },
+  history: {
+    title: '历史回测',
+    subtitle: '查看已自动保存的回测结果',
+    hint: '浏览落盘的历史回测/参数优化/步进结果，点击查看净值、指标与交易明细，便于跨运行对比。',
+  },
 }
 
 const TAB_ICONS: Record<Tab, typeof BarChart3> = {
@@ -36,6 +42,7 @@ const TAB_ICONS: Record<Tab, typeof BarChart3> = {
   strategy: FlaskConical,
   optimizer: SlidersHorizontal,
   walkforward: Waypoints,
+  history: History,
 }
 
 export function Backtest() {
@@ -43,7 +50,7 @@ export function Backtest() {
 
   const modeSwitch = (
     <div className="inline-flex rounded-btn border border-border bg-surface/80 p-0.5 shadow-sm">
-      {(['factor', 'strategy', 'optimizer', 'walkforward'] as const).map(tab => {
+      {(['factor', 'strategy', 'optimizer', 'walkforward', 'history'] as const).map(tab => {
         const Icon = TAB_ICONS[tab]
         const active = activeTab === tab
         return (
@@ -85,6 +92,7 @@ export function Backtest() {
         {activeTab === 'strategy' && <StrategyBacktest />}
         {activeTab === 'optimizer' && <StrategyOptimizer />}
         {activeTab === 'walkforward' && <StrategyWalkForward />}
+        {activeTab === 'history' && <BacktestHistory />}
       </main>
     </div>
   )

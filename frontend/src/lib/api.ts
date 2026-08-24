@@ -859,6 +859,31 @@ export interface StrategyBacktestResult {
   error: string | null
 }
 
+// ===== 历史回测存档 (落盘的 data/backtest_results/*.json) =====
+
+export type BacktestResultKind = 'backtest' | 'optimize' | 'walkforward' | 'unknown'
+
+export interface BacktestResultSummary {
+  name: string
+  kind: BacktestResultKind
+  strategy_id: string | null
+  run_id: string | null
+  saved_at: number
+  config: {
+    start: string
+    end: string
+    symbols: string[] | null
+    params: Record<string, any> | null
+    mode?: string | null
+  }
+  metrics: Record<string, number | string | null>
+}
+
+export interface BacktestHistoryList {
+  results: BacktestResultSummary[]
+  count: number
+}
+
 // ===== Settings =====
 
 /** 端点发现清单 —— 对应 tickflow.org/endpoints.json */
@@ -1691,6 +1716,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+
+  backtestHistoryList: () => request<BacktestHistoryList>('/api/backtest/results'),
+  backtestHistoryGet: (name: string) =>
+    request<StrategyBacktestResult>(`/api/backtest/results/${encodeURIComponent(name)}`),
 
   pipelineRun: () => request<{ job_id: string; reused: boolean }>(
     '/api/pipeline/run', { method: 'POST' },

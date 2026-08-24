@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import threading
 from dataclasses import asdict
 from datetime import date, timedelta
@@ -287,6 +288,62 @@ def _cleanup_stale_jobs():
             _running_jobs.pop(k, None)
 
 
+def _sanitize_for_json(obj):
+    """递归把结果清洗为纯 JSON 可序列化: 数值 NaN/Inf -> None, 其它非常规标量 -> float/str。"""
+    if obj is None or isinstance(obj, (bool, int, str)):
+        return obj
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {str(k): _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    try:
+        f = float(obj)          # numpy 数值标量等
+    except (TypeError, ValueError):
+        return str(obj)
+    if math.isnan(f) or math.isinf(f):
+        return None
+    try:
+        i = int(obj)
+        if i == f:
+            return i
+    except (TypeError, ValueError):
+        pass
+    return f
+
+
+def _persist_result_to_disk(job_key: str, result: dict) -> str | None:
+    """把回测/优化结果落盘为可读 JSON, 供复查与跨运行对比。
+
+    结果原本只存在于内存 job.result 并经 SSE 实时推给前端, 服务重启即丢失。
+    此处存档到 data/backtest_results/{strategy_id}_{run_id}.json; run_id/strategy_id
+    从结果里尽力提取, 缺失时回退到 job_key / "strategy"。失败仅告警, 不阻断回测主流程。
+    """
+    try:
+        config = result.get("config") if isinstance(result, dict) else {}
+        strategy_id = (
+            (config or {}).get("strategy_id")
+            or (result.get("strategy_id") if isinstance(result, dict) else None)
+            or "strategy"
+        )
+        run_id = result.get("run_id") if isinstance(result, dict) else None
+        run_id = run_id or job_key
+        safe_id = "".join(c for c in str(strategy_id) if c.isalnum() or c in "-_") or "strategy"
+        safe_run = "".join(c for c in str(run_id) if c.isalnum() or c in "-_") or job_key
+        out_dir = settings.data_dir / "backtest_results"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{safe_id}_{safe_run}.json"
+        path.write_text(
+            json.dumps(_sanitize_for_json(result), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return str(path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("持久化回测结果失败: %s", e)
+        return None
+
+
 def _finish_job(job: _BacktestJob, *, result=None, error: str | None = None) -> None:
     """Publish the terminal state and proactively drop the reconnect entry after TTL."""
     finished_at = time.time()
@@ -295,6 +352,10 @@ def _finish_job(job: _BacktestJob, *, result=None, error: str | None = None) -> 
         job.error = error
         job.done = True
         job.finish_ts = finished_at
+
+    # 落盘存档: 仅成功结果 (排除 error/取消等), 失败与中断不写。
+    if result is not None and error is None and not (isinstance(result, dict) and result.get("error")):
+        _persist_result_to_disk(job.key, result)
 
     def _expire() -> None:
         with _jobs_lock:
@@ -1014,3 +1075,110 @@ async def walkforward_cancel(request: Request):
         job.cancel_event.set()
         return {"ok": True}
     return {"ok": False, "message": "任务不存在或已完成"}
+
+
+# ================================================================
+# 历史回测列表 — 读取 _persist_result_to_disk 落盘的 data/backtest_results/*.json
+# ================================================================
+
+def _result_summary(name: str, data: dict, mtime: float) -> dict:
+    """从一份落盘结果里尽力提取摘要字段, 供列表展示。损坏/非预期结构取不到就用 None/空。"""
+    config = data.get("config") if isinstance(data, dict) else {}
+    config = config if isinstance(config, dict) else {}
+    stats = data.get("stats") if isinstance(data, dict) else None
+    stats = stats if isinstance(stats, dict) else {}
+
+    def _fmt(v):
+        if v is None:
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return v
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return round(f, 4)
+
+    metrics: dict = {}
+    for k in ("total_return", "sharpe", "win_rate", "max_drawdown", "profit_factor", "excess",
+              "n_candidates", "n_days", "avg_daily_candidates", "best", "worst", "benchmark_return"):
+        if k in stats:
+            metrics[k] = _fmt(stats[k])
+    trades = data.get("trades") if isinstance(data, dict) else None
+    metrics["n_trades"] = metrics.get("n_trades") or (len(trades) if isinstance(trades, list) else None)
+
+    kind = "unknown"
+    if isinstance(data, dict):
+        if "trades" in data or ("equity_curve" in data and "stats" in data):
+            kind = "backtest"
+        elif "best_params" in data or "param_grid" in data or "grid_results" in data:
+            kind = "optimize"
+        elif any(k in data for k in ("oos_equity_curve", "n_folds", "folds")):
+            kind = "walkforward"
+            for k in ("compounded_oos_return", "consistency", "n_folds", "degradation",
+                      "avg_is_objective", "avg_oos_objective"):
+                if k in data:
+                    metrics[k] = _fmt(data[k])
+    if kind == "optimize":
+        best_stats = data.get("best_stats") if isinstance(data, dict) else None
+        if isinstance(best_stats, dict):
+            for k in ("total_return", "sharpe", "win_rate", "max_drawdown"):
+                if k in best_stats:
+                    metrics.setdefault(k, _fmt(best_stats[k]))
+
+    strategy_id = (
+        config.get("strategy_id")
+        or (data.get("strategy_id") if isinstance(data, dict) else None)
+        or data.get("strategy_name")
+    )
+    return {
+        "name": name,
+        "kind": kind,
+        "strategy_id": strategy_id,
+        "run_id": data.get("run_id") if isinstance(data, dict) else None,
+        "saved_at": mtime,
+        "config": {
+            "start": str(config.get("start", "")),
+            "end": str(config.get("end", "")),
+            "symbols": config.get("symbols"),
+            "params": config.get("params"),
+            "mode": config.get("mode"),
+        },
+        "metrics": metrics,
+    }
+
+
+@router.get("/results")
+def list_results() -> dict:
+    """列出已落盘的回测/优化/步进结果摘要 (data/backtest_results/*.json)。
+
+    只读目录、逐文件解析摘要, 不加载全量结果; 损坏文件跳过不阻断列表。
+    """
+    out_dir = settings.data_dir / "backtest_results"
+    if not out_dir.exists():
+        return {"results": [], "count": 0}
+    items = []
+    for f in sorted(out_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("backtest result unreadable %s: %s", f.name, e)
+            continue
+        items.append(_result_summary(f.name, data, f.stat().st_mtime))
+    return {"results": items, "count": len(items)}
+
+
+@router.get("/results/{name}")
+def get_result(name: str) -> dict:
+    """读取一份已落盘的回测结果完整 JSON。文件名白名单校验, 杜绝路径穿越。"""
+    if not name or not name.endswith(".json"):
+        raise HTTPException(status_code=400, detail="非法结果文件名")
+    if any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for c in name):
+        raise HTTPException(status_code=400, detail="非法结果文件名")
+    path = settings.data_dir / "backtest_results" / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="结果不存在")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"结果文件损坏: {e}") from e
