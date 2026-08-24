@@ -363,6 +363,7 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
         "app.backtest.matrix",
         "datetime",
         "__future__",
+        "app.strategy.market_data",   # 新增: 策略可读取指数/ETF 日K
     })
 
     @classmethod
