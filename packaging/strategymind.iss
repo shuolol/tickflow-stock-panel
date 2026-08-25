@@ -1,13 +1,13 @@
 ; ===========================================================================
-; TickFlow Stock Panel — Inno Setup 安装包脚本
+; StrategyMind — Inno Setup 安装包脚本
 ; ===========================================================================
-; 用途: 把 PyInstaller 产出的 dist/TickFlowStockPanel/ 文件夹封装成
+; 用途: 把 PyInstaller 产出的 dist/StrategyMind/ 文件夹封装成
 ;       单个 Setup.exe 安装程序 (双击→安装向导→快捷方式→可卸载)。
 ;
 ; 构建 (本地):
-;   1. 先跑 PyInstaller: cd backend && uv run pyinstaller ../packaging/tickflow.spec
-;   2. 再跑 Inno Setup:   ISCC.exe packaging\tickflow.iss
-;   3. 产物: packaging\Output\TickFlowStockPanel-Setup-x.x.x.exe
+;   1. 先跑 PyInstaller: cd backend && uv run pyinstaller ../packaging/strategymind.spec
+;   2. 再跑 Inno Setup:   ISCC.exe packaging\strategymind.iss
+;   3. 产物: packaging\Output\StrategyMind-Setup-x.x.x.exe
 ;
 ; 设计决策:
 ;   - 装到用户目录 {localappdata}\Programs\ (不弹 UAC, 不需管理员)
@@ -18,10 +18,10 @@
 ;   - 卸载入口 (控制面板可见)
 ; ===========================================================================
 
-#define MyAppName          "TickFlow 股票面板"
-#define MyAppNameEN       "TickFlow Stock Panel"
-#define MyAppExeName      "TickFlowStockPanel.exe"
-#define MyAppPublisher    "TickFlow"
+#define MyAppName          "StrategyMind"
+#define MyAppNameEN       "StrategyMind"
+#define MyAppExeName      "StrategyMind.exe"
+#define MyAppPublisher    "StrategyMind"
 
 ; 版本号: 从 frontend/package.json 读取, 与 Release tag 保持一致
 ; 手动指定更可靠 (CI 传入 /DMyAppVersion)
@@ -37,11 +37,11 @@ AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 ; 默认装到 D 盘 (非系统盘), 用户可在向导中改任意位置
 ; 若 D 盘不存在, [Code] 段 InitializeWizard 会自动回退到用户目录
-DefaultDirName=D:\TickFlowStockPanel
+DefaultDirName=D:\StrategyMind
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=Output
-OutputBaseFilename=TickFlowStockPanel-Setup-{#MyAppVersion}
+OutputBaseFilename=StrategyMind-Setup-{#MyAppVersion}
 
 ; 关键: 不需要管理员权限, 永不弹 UAC
 ; 装到 D 盘普通目录 (非 Program Files) 不需要管理员权限
@@ -77,7 +77,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 ; 把 PyInstaller 产出的整个文件夹搬进安装目录
 ; Source 路径相对于 .iss 文件所在目录
-Source: "..\backend\dist\TickFlowStockPanel\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\backend\dist\StrategyMind\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 ; 开始菜单
@@ -139,7 +139,7 @@ begin
   // D 盘存在 → 用 D 盘; 否则回退用户目录 (无需管理员权限)
   if not DirExists('D:\') then
   begin
-    DefaultDir := ExpandConstant('{localappdata}\Programs\TickFlowStockPanel');
+    DefaultDir := ExpandConstant('{localappdata}\Programs\StrategyMind');
     WizardForm.DirEdit.Text := DefaultDir;
   end;
 end;

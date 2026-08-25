@@ -10,7 +10,7 @@
 
 构建 (在项目根目录):
   cd frontend && pnpm build                     # 先构建前端到 frontend/dist
-  pyinstaller packaging/tickflow.spec           # 产物在 dist/TickFlowStockPanel/
+  pyinstaller packaging/strategymind.spec       # 产物在 dist/StrategyMind/
 """
 import sys
 from importlib.util import find_spec
@@ -162,7 +162,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="TickFlowStockPanel",
+    name="StrategyMind",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -184,7 +184,7 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="TickFlowStockPanel",
+    name="StrategyMind",
 )
 
 # ── macOS: 封装成 .app 包 ────────────────────────────────────────────
@@ -205,13 +205,13 @@ if _IS_MACOS:
 
     app = BUNDLE(
         coll,
-        name="TickFlowStockPanel.app",
+        name="StrategyMind.app",
         icon=APP_ICON,
-        bundle_identifier="com.tickflow.stockpanel",
+        bundle_identifier="com.strategymind.stockpanel",
         version=APP_VERSION,   # → CFBundleShortVersionString / CFBundleVersion
         info_plist={
-            "CFBundleName": "TickFlow Stock Panel",
-            "CFBundleDisplayName": "TickFlow 股票面板",
+            "CFBundleName": "StrategyMind",
+            "CFBundleDisplayName": "StrategyMind",
             "CFBundleVersion": APP_VERSION,
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "10.13",

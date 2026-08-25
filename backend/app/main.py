@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(
-        "TickFlow Stock Panel v%s starting (mode=%s)",
+        "StrategyMind v%s starting (mode=%s)",
         __version__, tf_client.current_mode(),
     )
 
@@ -269,7 +269,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="TickFlow Stock Panel",
+    title="StrategyMind",
     version=__version__,
     description="A 股选股 + 回测面板 — TickFlow 适配",
     lifespan=lifespan,

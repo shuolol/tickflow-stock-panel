@@ -5,8 +5,7 @@
  */
 import { useSearchParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { BarChart3, Key, Radio, SlidersHorizontal, Sparkles, Settings2, Zap } from 'lucide-react'
-import { SettingsKeysPanel } from './settings/Keys'
+import { BarChart3, Radio, SlidersHorizontal, Sparkles, Settings2, Zap } from 'lucide-react'
 import { SettingsAIPanel } from './settings/AI'
 import { SettingsMonitoringPanel } from './settings/Monitoring'
 import { SettingsExtPagesPanel } from './settings/ExtPages'
@@ -29,7 +28,6 @@ type TabDef = {
 }
 
 const TABS: readonly TabDef[] = [
-  { key: 'account',    label: 'TickFlow',   icon: Key,       panel: SettingsKeysPanel },
   { key: 'ai',         label: 'AI 设置',    icon: Sparkles,  panel: SettingsAIPanel },
   { key: 'monitoring', label: '实时监控',   icon: Radio,     panel: SettingsMonitoringPanel },
   { key: 'ext-pages',  label: '扩展页面',   icon: BarChart3, panel: SettingsExtPagesPanel },

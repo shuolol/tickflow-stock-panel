@@ -339,7 +339,7 @@ def main() -> int:
         # 写完整 traceback 到 data/desktop.log, 并弹原生 MessageBox 让用户截图反馈。
         # 必须排在 KeyboardInterrupt 之后 —— Exception 是基类, 在前会遮蔽它。
         logger.exception("桌面客户端启动失败")
-        _show_crash("TickFlow 启动失败", traceback.format_exc())
+        _show_crash("StrategyMind 启动失败", traceback.format_exc())
         return 1
     finally:
         _release_single_instance()

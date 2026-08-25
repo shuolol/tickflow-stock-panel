@@ -7,8 +7,8 @@
 
 | 产物 | 路径 |
 |---|---|
-| PyInstaller 打包目录 | `backend/dist/TickFlowStockPanel/` |
-| **最终安装包** | `packaging/Output/TickFlowStockPanel-Setup-<版本>.exe` |
+| PyInstaller 打包目录 | `backend/dist/StrategyMind/` |
+| **最终安装包** | `packaging/Output/StrategyMind-Setup-<版本>.exe` |
 
 版本号取自 `frontend/package.json`(当前 `0.1.88`)。
 
@@ -44,12 +44,12 @@ uv sync --no-dev --extra desktop --extra legacy-cpu
 #    ⚠️ 必须加 --python .venv:shell 在 conda base 里时,uv pip 默认会装进 conda,无写权限直接报错
 uv pip install --python .venv pyinstaller
 
-# 4. PyInstaller 打包 → backend/dist/TickFlowStockPanel/
-uv run pyinstaller ../packaging/tickflow.spec --noconfirm
+# 4. PyInstaller 打包 → backend/dist/StrategyMind/
+uv run pyinstaller ../packaging/strategymind.spec --noconfirm
 
-# 5. Inno Setup 生成安装包 → packaging/Output/TickFlowStockPanel-Setup-<版本>.exe
+# 5. Inno Setup 生成安装包 → packaging/Output/StrategyMind-Setup-<版本>.exe
 cd ..
-& "$env:USERPROFILE\innosetup-2\ISCC.exe" /DMyAppVersion=0.1.88 packaging\tickflow.iss
+& "$env:USERPROFILE\innosetup-2\ISCC.exe" /DMyAppVersion=0.1.88 packaging\strategymind.iss
 ```
 
 最后一步的 `MyAppVersion` 记得与 `frontend/package.json` 里的版本对齐。
@@ -78,7 +78,7 @@ uv sync --no-dev --extra desktop --extra legacy-cpu
 
 - `--extra desktop`:装 pywebview(桌面窗口壳),`desktop.py` import 需要它。
 - `--extra legacy-cpu`:装 polars `rtcompat` 兼容内核,让安装包同时支持有/无 AVX2 的 CPU。
-  `tickflow.spec` 会按 `find_spec` 自动收集对应运行时。
+  `strategymind.spec` 会按 `find_spec` 自动收集对应运行时。
 - `--no-dev`:跳过 pytest/ruff/mypy 等开发依赖,减小包体积。
 - 不用 `--extra backtest`(vectorbt 回测链)会显式被 spec exclude。
 
@@ -96,12 +96,12 @@ uv pip install --python .venv pyinstaller
 
 ```powershell
 cd backend
-uv run pyinstaller ../packaging/tickflow.spec --noconfirm
+uv run pyinstaller ../packaging/strategymind.spec --noconfirm
 ```
 
 - 在 `backend` 目录执行(用该目录的 venv);spec 里 `SPECPATH` 自动定位到项目根,
   所以 `frontend/dist`、`tiers.yaml` 等相对路径都正确。
-- 产出 `backend/dist/TickFlowStockPanel/`(onedir 模式,启动快、调试友好)。
+- 产出 `backend/dist/StrategyMind/`(onedir 模式,启动快、调试友好)。
 - 关键配置(spec 内):
   - `collect_all` polars/pyarrow/duckdb/fastexcel + `_polars_runtime_32/_compat`(原生库 `.libs/` 必须完整,否则启动崩);
   - hidden imports:pywebview、winotify/plyer 平台后端、uvicorn 动态加载模块、fastapi/pydantic/tickflow 元数据(`copy_metadata`,否则 frozen 后报 `PackageNotFoundError`);
@@ -112,15 +112,15 @@ uv run pyinstaller ../packaging/tickflow.spec --noconfirm
 ### 5. Inno Setup 生成安装包
 
 ```powershell
-& "$env:USERPROFILE\innosetup-2\ISCC.exe" /DMyAppVersion=0.1.88 packaging\tickflow.iss
+& "$env:USERPROFILE\innosetup-2\ISCC.exe" /DMyAppVersion=0.1.88 packaging\strategymind.iss
 ```
 
-- `tickflow.iss` 把 `backend/dist/TickFlowStockPanel/` 整个目录封进一个 `Setup.exe`。
+- `strategymind.iss` 把 `backend/dist/StrategyMind/` 整个目录封进一个 `Setup.exe`。
 - 设计要点(iss 内注释详述):
   - 免管理员:装到 `D:\` 或用户目录(`{localappdata}\Programs\`,无 D 盘自动回退);
   - 用户数据在安装目录 `data/`,卸载时询问是否保留(覆盖安装不丢数据);
   - 简中 + 英文双语安装向导,中文语言包已随仓库内置。
-- 产出 `packaging/Output/TickFlowStockPanel-Setup-0.1.88.exe`(LZMA2 压缩,约 118 MB,耗时约 2 分钟)。
+- 产出 `packaging/Output/StrategyMind-Setup-0.1.88.exe`(LZMA2 压缩,约 118 MB,耗时约 2 分钟)。
 
 ---
 
@@ -130,10 +130,10 @@ uv run pyinstaller ../packaging/tickflow.spec --noconfirm
 
 ```powershell
 $tmp = "$env:TEMP\tickflow-smoke"
-Start-Process "packaging\Output\TickFlowStockPanel-Setup-0.1.88.exe" `
+Start-Process "packaging\Output\StrategyMind-Setup-0.1.88.exe" `
   -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-","/DIR=$tmp",'/TASKS=""' -Wait
 # 启动后它自动选 3018 起第一个空闲端口(desktop.py _find_free_port)
-Start-Process "$tmp\TickFlowStockPanel.exe"
+Start-Process "$tmp\StrategyMind.exe"
 # 等几秒后:
 curl.exe -s http://127.0.0.1:3018/health
 # 期望: {"status":"ok","version":"0.1.88",...}
